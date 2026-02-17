@@ -1,19 +1,26 @@
 # securitygoblin.jsonlogging
 
-Ansible collection for logging Windows playbook job status to structured JSON files.
+Ansible collection for logging playbook job status to structured JSON files on
+**Windows** and **Linux** hosts.
 
-The `win_job_log` module creates and maintains a JSON status file on each Windows
-host.  It tracks every job that runs against the host — recording start time, end
-time, duration, health, task summary, and optional SIEM / software metadata.
+| Module | Target OS | Implementation |
+|--------|-----------|---------------|
+| `win_job_log` | Windows | PowerShell + Ansible.Basic |
+| `job_log` | Linux | Python + ansible.module_utils.basic |
+
+Both modules produce the **same JSON schema** and accept the same parameters
+(the only difference is the file-locking mechanism).  Track every job that runs
+against a host — start time, end time, duration, health, task summary, and
+optional SIEM / software metadata.
 
 ## Requirements
 
-| Component | Minimum version |
-|-----------|----------------|
-| Ansible   | 2.10+          |
-| Windows   | Server 2012 R2+ / Windows 10+ |
-| PowerShell | 5.1+          |
-| WinRM      | Configured for Ansible |
+| Component | Windows | Linux |
+|-----------|---------|-------|
+| Ansible | 2.10+ | 2.10+ |
+| OS | Server 2012 R2+ / Win 10+ | Any supported distro |
+| Runtime | PowerShell 5.1+ | Python 2.7+ / 3.5+ |
+| Connection | WinRM | SSH |
 
 ## Installation
 
@@ -22,7 +29,7 @@ time, duration, health, task summary, and optional SIEM / software metadata.
 ansible-galaxy collection install securitygoblin.jsonlogging
 
 # From a tarball
-ansible-galaxy collection install securitygoblin-jsonlogging-1.0.0.tar.gz
+ansible-galaxy collection install securitygoblin-jsonlogging-1.1.0.tar.gz
 
 # In requirements.yml
 ```
@@ -38,7 +45,9 @@ collections:
 
 ## Quick Start
 
-Add **two tasks** to any existing playbook — one at the start, one at the end:
+Add **two tasks** to any existing playbook — one at the start, one at the end.
+
+### Windows
 
 ```yaml
 - name: Log job start
@@ -57,12 +66,39 @@ Add **two tasks** to any existing playbook — one at the start, one at the end:
     status: ok
 ```
 
+### Linux
+
+```yaml
+- name: Log job start
+  securitygoblin.jsonlogging.job_log:
+    path: /var/log/ansible/status.json
+    job_name: patch-linux
+    state: started
+
+# ... your existing tasks ...
+
+- name: Log job end
+  securitygoblin.jsonlogging.job_log:
+    path: /var/log/ansible/status.json
+    job_name: patch-linux
+    state: completed
+    status: ok
+```
+
 That's it.  Timestamps, hostname, job ID, duration, and host-level aggregation
 are all handled automatically.
 
 ---
 
 ## How to Log Jobs
+
+The patterns below apply to **both** modules.  Just swap the module name and
+path style for your OS:
+
+| | Windows | Linux |
+|-|---------|-------|
+| Module | `securitygoblin.jsonlogging.win_job_log` | `securitygoblin.jsonlogging.job_log` |
+| Path | `C:\ansible\status.json` | `/var/log/ansible/status.json` |
 
 ### Pattern 1 — Log start and success
 
@@ -71,17 +107,17 @@ The simplest form.  Place `state: started` before your tasks and
 
 ```yaml
 - name: Log start
-  securitygoblin.jsonlogging.win_job_log:
-    path: C:\ansible\status.json
+  securitygoblin.jsonlogging.job_log:
+    path: /var/log/ansible/status.json
     job_name: my-job
     state: started
 
 - name: Do work
-  ansible.windows.win_shell: echo "hello"
+  ansible.builtin.shell: echo "hello"
 
 - name: Log success
-  securitygoblin.jsonlogging.win_job_log:
-    path: C:\ansible\status.json
+  securitygoblin.jsonlogging.job_log:
+    path: /var/log/ansible/status.json
     job_name: my-job
     state: completed
     status: ok
@@ -93,18 +129,18 @@ Wrap your work in a `block/rescue` so failures are also logged:
 
 ```yaml
 - name: Log start
-  securitygoblin.jsonlogging.win_job_log:
-    path: C:\ansible\status.json
+  securitygoblin.jsonlogging.job_log:
+    path: /var/log/ansible/status.json
     job_name: my-job
     state: started
 
 - block:
     - name: Do work
-      ansible.windows.win_shell: echo "hello"
+      ansible.builtin.shell: echo "hello"
 
     - name: Log success
-      securitygoblin.jsonlogging.win_job_log:
-        path: C:\ansible\status.json
+      securitygoblin.jsonlogging.job_log:
+        path: /var/log/ansible/status.json
         job_name: my-job
         state: completed
         status: ok
@@ -112,8 +148,8 @@ Wrap your work in a `block/rescue` so failures are also logged:
 
   rescue:
     - name: Log failure
-      securitygoblin.jsonlogging.win_job_log:
-        path: C:\ansible\status.json
+      securitygoblin.jsonlogging.job_log:
+        path: /var/log/ansible/status.json
         job_name: my-job
         state: completed
         status: failed
@@ -124,6 +160,74 @@ Wrap your work in a `block/rescue` so failures are also logged:
 
 Pass controller-side information using Jinja2 variables.  The module
 auto-generates everything else.
+
+#### Linux example
+
+```yaml
+- hosts: linux_servers
+  vars:
+    log_path: /var/log/ansible/status.json
+  tasks:
+    - name: Log start
+      securitygoblin.jsonlogging.job_log:
+        path: "{{ log_path }}"
+        job_name: patch-linux
+        state: started
+        source:
+          ansible_controller: "{{ inventory_hostname }}"
+          playbook: "{{ ansible_play_name }}"
+          run_id: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}-{{ ansible_play_name }}"
+          environment: "{{ env | default('prod') }}"
+          ansible_version: "{{ ansible_version.full }}"
+
+    - block:
+        - name: Install updates
+          ansible.builtin.yum:
+            name: '*'
+            state: latest
+            security: true
+          register: update_result
+
+        - name: Log success
+          securitygoblin.jsonlogging.job_log:
+            path: "{{ log_path }}"
+            job_name: patch-linux
+            state: completed
+            status: ok
+            health: healthy
+            summary:
+              ok: 1
+              changed: "{{ update_result.changed | int }}"
+              failed: 0
+              unreachable: 0
+            host_info:
+              software_installed:
+                - rsyslog-8.2102
+              config_applied:
+                - cis-benchmark-level2
+              siem:
+                onboarded: true
+                collector: syslog-collector-01
+                syslog_running: true
+                forwarding_ok: true
+                last_seen: "{{ ansible_date_time.iso8601 }}"
+
+      rescue:
+        - name: Log failure
+          securitygoblin.jsonlogging.job_log:
+            path: "{{ log_path }}"
+            job_name: patch-linux
+            state: completed
+            status: failed
+            health: unhealthy
+            summary:
+              ok: 0
+              changed: 0
+              failed: 1
+              unreachable: 0
+```
+
+#### Windows example
 
 ```yaml
 - hosts: windows_servers
@@ -190,13 +294,15 @@ auto-generates everything else.
 
 ---
 
-## Module Reference — `win_job_log`
+## Module Reference
 
-### Parameters
+### Shared parameters
+
+Both `win_job_log` and `job_log` accept the same parameters:
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `path` | path | **yes** | | Absolute path to the JSON log file on the Windows host |
+| `path` | path | **yes** | | Absolute path to the JSON log file |
 | `job_name` | str | **yes** | | Unique job name (upsert key) |
 | `state` | str | **yes** | | `started` or `completed` |
 | `status` | str | no | `ok` | `ok`, `failed`, `unreachable` |
@@ -206,7 +312,13 @@ auto-generates everything else.
 | `host_info` | dict | no | `{}` | Host-level information (see below) |
 | `job_id` | str | no | auto | Custom job ID; auto-generated as `host-HOSTNAME-NNNNN` if omitted |
 | `create_directory` | bool | no | `true` | Create parent directories if missing |
-| `mutex_timeout_ms` | int | no | `30000` | File lock timeout in milliseconds |
+
+### Platform-specific parameters
+
+| Parameter | Module | Type | Default | Description |
+|-----------|--------|------|---------|-------------|
+| `mutex_timeout_ms` | `win_job_log` | int | `30000` | Windows Mutex lock timeout (ms) |
+| `lock_timeout_sec` | `job_log` | int | `30` | Linux flock timeout (seconds) |
 
 ### `source` sub-parameters
 
@@ -241,13 +353,12 @@ auto-generates everything else.
 
 ### What gets auto-generated
 
-These fields are set automatically by the PowerShell module — you don't need
-to provide them:
+These fields are set automatically — you don't need to provide them:
 
 | Field | Source | When |
 |-------|--------|------|
 | `generated_at` | Current UTC time | Every call |
-| `host.name` | `$env:COMPUTERNAME` | File creation |
+| `host.name` | Hostname (`$env:COMPUTERNAME` / `socket.gethostname()`) | File creation |
 | `started_at` | Current UTC time | `state: started` |
 | `finished_at` | Current UTC time | `state: completed` |
 | `duration_sec` | `finished_at - started_at` | `state: completed` |
@@ -271,7 +382,7 @@ to provide them:
 
 ## JSON Schema Reference
 
-The log file conforms to schema version `1.0`:
+Both modules produce the same schema (version `1.0`):
 
 ```json
 {
@@ -348,7 +459,7 @@ The log file conforms to schema version `1.0`:
 | `jobs[].maintenance_window.started_at` | str | Maintenance window start |
 | `jobs[].maintenance_window.ended_at` | str | Maintenance window end |
 | `jobs[].maintenance_window.ended` | bool | Whether window has closed |
-| `host.name` | str | Windows hostname |
+| `host.name` | str | Hostname |
 | `host.status` | str | Aggregated: `ok`, `running`, `failed` |
 | `host.health` | str | Aggregated: `healthy`, `degraded`, `unhealthy` |
 | `host.software_installed` | list | Software packages |
@@ -363,7 +474,7 @@ The log file conforms to schema version `1.0`:
 
 ## Advanced Examples
 
-### Multiple jobs in a single playbook
+### Multiple jobs in a single playbook (Windows)
 
 ```yaml
 - hosts: windows_servers
@@ -414,13 +525,74 @@ The log file conforms to schema version `1.0`:
         status: ok
 ```
 
+### Multiple jobs in a single playbook (Linux)
+
+```yaml
+- hosts: linux_servers
+  vars:
+    log_path: /var/log/ansible/status.json
+    src: &src
+      ansible_controller: "{{ inventory_hostname }}"
+      playbook: "{{ ansible_play_name }}"
+      environment: "{{ env | default('prod') }}"
+      ansible_version: "{{ ansible_version.full }}"
+  tasks:
+    # ── Job 1: Patching ──
+    - name: "[patch] Start"
+      securitygoblin.jsonlogging.job_log:
+        path: "{{ log_path }}"
+        job_name: patch-linux
+        state: started
+        source: *src
+
+    - name: "[patch] Install updates"
+      ansible.builtin.yum:
+        name: '*'
+        state: latest
+        security: true
+
+    - name: "[patch] Complete"
+      securitygoblin.jsonlogging.job_log:
+        path: "{{ log_path }}"
+        job_name: patch-linux
+        state: completed
+        status: ok
+
+    # ── Job 2: Compliance scan ──
+    - name: "[compliance] Start"
+      securitygoblin.jsonlogging.job_log:
+        path: "{{ log_path }}"
+        job_name: compliance-scan
+        state: started
+        source: *src
+
+    - name: "[compliance] Run scan"
+      ansible.builtin.shell: /opt/tools/compliance-scan
+
+    - name: "[compliance] Complete"
+      securitygoblin.jsonlogging.job_log:
+        path: "{{ log_path }}"
+        job_name: compliance-scan
+        state: completed
+        status: ok
+```
+
 ### Custom job IDs
 
 ```yaml
+# Windows
 - name: Log with custom ID
   securitygoblin.jsonlogging.win_job_log:
     path: C:\ansible\status.json
     job_name: patch-windows
+    job_id: "PATCH-{{ ansible_date_time.date }}-001"
+    state: started
+
+# Linux
+- name: Log with custom ID
+  securitygoblin.jsonlogging.job_log:
+    path: /var/log/ansible/status.json
+    job_name: patch-linux
     job_id: "PATCH-{{ ansible_date_time.date }}-001"
     state: started
 ```
@@ -429,8 +601,8 @@ The log file conforms to schema version `1.0`:
 
 ```yaml
 - name: Dry run
-  securitygoblin.jsonlogging.win_job_log:
-    path: C:\ansible\status.json
+  securitygoblin.jsonlogging.job_log:
+    path: /var/log/ansible/status.json
     job_name: test-job
     state: started
   check_mode: true
@@ -440,7 +612,7 @@ The log file conforms to schema version `1.0`:
 
 ## Troubleshooting
 
-### "Failed to acquire file lock"
+### "Failed to acquire file lock" (Windows)
 
 Another process is writing to the same file.  Increase the timeout:
 
@@ -449,13 +621,28 @@ securitygoblin.jsonlogging.win_job_log:
   mutex_timeout_ms: 60000   # 60 seconds
 ```
 
+### "Failed to acquire file lock" (Linux)
+
+Same issue on Linux.  Increase the timeout:
+
+```yaml
+securitygoblin.jsonlogging.job_log:
+  lock_timeout_sec: 60   # 60 seconds
+```
+
 ### "Failed to parse existing JSON file"
 
 The file is corrupted.  Delete it and let the module recreate it, or validate
 it manually:
 
 ```powershell
+# Windows
 Get-Content C:\ansible\status.json | ConvertFrom-Json
+```
+
+```bash
+# Linux
+python3 -m json.tool /var/log/ansible/status.json
 ```
 
 ### Module not found
@@ -470,13 +657,21 @@ ansible-galaxy collection install securitygoblin.jsonlogging --force
 
 ### Permission denied
 
-Ensure the Ansible WinRM user has write access to the target directory:
+Ensure the Ansible user has write access to the target directory:
 
 ```yaml
+# Windows
 - name: Ensure log directory exists
   ansible.windows.win_file:
     path: C:\ansible
     state: directory
+
+# Linux
+- name: Ensure log directory exists
+  ansible.builtin.file:
+    path: /var/log/ansible
+    state: directory
+    mode: "0755"
 ```
 
 ## License
