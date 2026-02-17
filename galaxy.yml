@@ -1,0 +1,18 @@
+namespace: securitygoblin
+name: jsonlogging
+version: 1.0.0
+readme: README.md
+authors:
+  - securitygoblin
+description: Ansible collection for logging Windows playbook job status to JSON files
+license:
+  - MIT
+repository: https://github.com/securitygoblin/ansible-collection-jsonlogging
+tags:
+  - windows
+  - logging
+  - json
+  - monitoring
+build_ignore:
+  - "*.tar.gz"
+  - ".gitignore"
